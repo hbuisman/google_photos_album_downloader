@@ -1,3 +1,5 @@
+import faulthandler
+faulthandler.enable(all_threads=True)
 import tkinter as tk
 from tkinter import messagebox
 import threading
@@ -5,6 +7,7 @@ import io
 import requests
 import os
 from PIL import Image, ImageTk
+from multiprocessing import Queue
 
 import photos_api
 
@@ -17,6 +20,7 @@ class AlbumDownloaderApp:
         self.albums = []
         self.album_vars = []  # List of tuples (album, BooleanVar)
         self.album_images = []   # to hold references of cover images
+        self.service_lock = threading.Lock()
 
         # Button to start album search.
         self.search_button = tk.Button(master, text="Search Albums", command=self.search_albums)
@@ -48,19 +52,6 @@ class AlbumDownloaderApp:
         # Status label.
         self.status_label = tk.Label(master, text="Status: Ready")
         self.status_label.pack(pady=5)
-        
-        from tkinter import ttk
-        # Progress bar for listing albums (cover fetching, etc.)
-        self.list_progress = ttk.Progressbar(master, orient="horizontal", mode="determinate")
-        self.list_progress.pack(fill=tk.X, padx=10, pady=5)
-        
-        # Progress bar for overall album downloads (percentage of albums processed).
-        self.download_progress = ttk.Progressbar(master, orient="horizontal", mode="determinate")
-        self.download_progress.pack(fill=tk.X, padx=10, pady=5)
-
-        # Progress bar for current album's file download progress.
-        self.file_progress = ttk.Progressbar(master, orient="horizontal", mode="determinate")
-        self.file_progress.pack(fill=tk.X, padx=10, pady=5)
     
     def search_albums(self):
         # Disable search button to avoid multiple clicks.
@@ -91,8 +82,6 @@ class AlbumDownloaderApp:
         self.album_vars = []
         self.album_images = []  # clear saved images
         self.current_album_index = 0
-        self.list_progress['value'] = 0
-        self.list_progress['maximum'] = len(self.albums)
         self.process_next_album()
 
     def process_next_album(self):
@@ -140,7 +129,6 @@ class AlbumDownloaderApp:
             threading.Thread(target=self.update_album_skip_info, args=(info_label, album), daemon=True).start()
 
             self.current_album_index += 1
-            self.list_progress.step(1)
             self.status_label.config(text=f"Listing album {self.current_album_index} of {len(self.albums)}: {album.get('title', 'Untitled')}")
             self.master.after(50, self.process_next_album)
         else:
@@ -153,8 +141,6 @@ class AlbumDownloaderApp:
             messagebox.showinfo("No selection", "Please select at least one album to download.")
             return
         self.set_status("Status: Downloading selected albums...")
-        self.download_progress['value'] = 0
-        self.download_progress['maximum'] = len(selected_albums)
         # Start download in a separate thread.
         threading.Thread(target=self.threaded_download, args=(selected_albums,)).start()
 
@@ -163,33 +149,14 @@ class AlbumDownloaderApp:
             album_title = album.get('title', 'Untitled')
             album_id = album.get('id')
             self.set_status(f"Downloading album: {album_title}")
-
-            # Get total number of files in this album.
-            total_files = photos_api.count_album_media_items(self.service, album_id)
-            # Set file progress bar maximum for current album.
-            def update_file_progress_max(tf):
-                self.file_progress.config(value=0, maximum=tf)
-            self.master.after(0, lambda: update_file_progress_max(total_files))
-
-            # Define a callback to update file progress for each file downloaded.
-            def step_file_progress():
-                self.file_progress.step(1)
-            def progress_callback():
-                self.master.after(0, step_file_progress)
-
-            # Download the album with file progress callback.
-            photos_api.download_album_photos(self.service, album_id, album_title, progress_callback)
-
-            # Update overall album progress bar.
-            def step_album_progress():
-                self.download_progress.step(1)
-            self.master.after(0, step_album_progress)
-
-            # Reset file progress bar for the next album.
-            def reset_file_progress():
-                self.file_progress.config(value=0)
-            self.master.after(0, reset_file_progress)
-
+            
+            with self.service_lock:
+                total_files = photos_api.count_album_media_items(self.service, album_id)
+            
+            photos_api.download_album_photos(
+                self.service, album_id, album_title,
+                lambda: None  # no progress update since progress bars are removed
+            )
         self.set_status("Status: Download complete.")
         messagebox.showinfo("Complete", "Download of selected albums complete.")
     
@@ -229,8 +196,8 @@ class AlbumDownloaderApp:
         """
         folder_name = os.path.join('downloads', album.get('title', 'Untitled').replace(" ", "_"))
         try:
-            # Use a new helper function in photos_api to count total media items.
-            total = photos_api.count_album_media_items(self.service, album.get('id'))
+            with self.service_lock:
+                total = photos_api.count_album_media_items(self.service, album.get('id'))
         except Exception as e:
             total = None
         downloaded = 0
@@ -241,6 +208,12 @@ class AlbumDownloaderApp:
         else:
             msg = f"Already downloaded: {downloaded}"
         self.master.after(0, lambda: info_label.config(text=msg))
+
+    def reset_progress(self, progressbar):
+        try:
+            progressbar.config(value=0)
+        except Exception as e:
+            print("Error resetting progress bar:", e)
 
 if __name__ == "__main__":
     root = tk.Tk()
