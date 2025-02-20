@@ -1,0 +1,21 @@
+# Downloaded albums directory
+downloads/
+
+# Google OAuth credentials
+credentials.json
+client_secret*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db 
